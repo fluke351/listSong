@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const dns = require('dns');
+const dgram = require('dgram');
 const { spawn, spawnSync } = require('child_process');
 
 const PORT = Number(process.env.PORT) || 3100;
@@ -12,6 +14,9 @@ const PUBLIC_DIR = path.join(ROOT, 'public');
 const CACHE_DIR = path.join(ROOT, 'cache');
 const DATA_DIR = path.join(ROOT, 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
+const BUILD = (() => {
+  try { return fs.readFileSync(path.join(ROOT, 'build.txt'), 'utf8').trim(); } catch { return 'dev'; }
+})(); // stamped by build.ps1; setup.ps1 compares it to replace an older running copy
 const PREFETCH = 3; // download current + next N songs ahead of time
 const MAX_HISTORY = 30;
 // cache limit for songs that already played; songs playing or in the queue are always kept. 0 = delete right after playing
@@ -396,14 +401,137 @@ function serveFile(req, res, file, cache) {
   });
 }
 
-function lanUrls() {
-  const urls = [];
-  for (const list of Object.values(os.networkInterfaces())) {
-    for (const a of list || []) {
-      if (a.family === 'IPv4' && !a.internal) urls.push(`http://${a.address}:${PORT}`);
+// the IP Windows would use to reach the internet = the real LAN card (no packet is actually sent)
+function defaultRouteIp() {
+  return new Promise((resolve) => {
+    const sock = dgram.createSocket('udp4');
+    const done = (ip) => { try { sock.close(); } catch { /* already closed */ } resolve(ip); };
+    sock.on('error', () => done(null));
+    sock.connect(53, '8.8.8.8', () => done(sock.address().address));
+  });
+}
+
+const VIRTUAL_NIC = /vethernet|wsl|hyper-v|virtualbox|vbox|vmware|vmnet|docker|tailscale|zerotier|hamachi|radmin|wireguard|openvpn|vpn|bluetooth|tap-|tun/i;
+
+// best address first: the default-route card, then other real cards, then virtual adapters / VPNs.
+// Not filtered by "private" ranges: some office LANs use public-looking addresses (e.g. 191.191.x.x)
+async function lanUrls() {
+  const route = await defaultRouteIp();
+  const list = [];
+  for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+    for (const a of addrs || []) {
+      if (a.family !== 'IPv4' && a.family !== 4) continue;
+      if (a.internal || a.address.startsWith('169.254.')) continue;
+      const virtual = VIRTUAL_NIC.test(name) || a.address.startsWith('100.'); // 100.x = Tailscale / carrier NAT
+      const rank = virtual ? 2 : a.address === route ? 0 : 1;
+      list.push({ rank, url: `http://${a.address}:${PORT}` });
     }
   }
-  return urls;
+  return list.sort((x, y) => x.rank - y.rank).map((x) => x.url);
+}
+
+// only the machine running the server (the speaker) may control playback and edit the queue;
+// everyone else on the LAN can only add songs
+function clientIp(req) {
+  return String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+}
+function isLocal(req) {
+  const ip = clientIp(req);
+  if (ip === '::1' || ip.startsWith('127.')) return true;
+  return Object.values(os.networkInterfaces()).flat().some((a) => a && a.address === ip);
+}
+
+// computer name of a Windows PC on the LAN (NetBIOS/LLMNR); phones usually don't answer
+const pcNames = new Map(); // ip -> Promise<string>
+function pcName(ip) {
+  if (!pcNames.has(ip)) {
+    pcNames.set(ip, new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(''), 8000);
+      dns.lookupService(ip, PORT, (err, host) => {
+        clearTimeout(timer);
+        host = err || !host || host === ip ? '' : host.split('.')[0];
+        resolve(host.slice(0, 30));
+      });
+    }).then((name) => {
+      if (!name) setTimeout(() => pcNames.delete(ip), 5 * 60 * 1000); // retry later
+      return name;
+    }));
+  }
+  return pcNames.get(ip);
+}
+
+// phones: over plain http the server only sees the User-Agent, so tell them apart by the end of their IP
+function phoneName(req, ip) {
+  const ua = String(req.headers['user-agent'] || '');
+  const kind = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android'
+    : /Macintosh/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : 'อุปกรณ์';
+  return `${kind} (.${ip.split(/[.:]/).pop()})`;
+}
+
+// the name tied to every song a visitor adds. It is decided here and never taken from the page,
+// so nobody can add songs under someone else's name.
+const logins = new Map(); // ip -> { name, at } from a Windows login handshake
+const LOGIN_TTL = 12 * 60 * 60 * 1000;
+async function identity(req) {
+  const ip = clientIp(req);
+  if (isLocal(req)) return { name: os.userInfo().username, source: 'login' };
+  const login = logins.get(ip);
+  if (login && Date.now() - login.at < LOGIN_TTL) return { name: login.name, source: 'login' };
+  const pc = await pcName(ip);
+  return pc ? { name: pc, source: 'pc' } : { name: phoneName(req, ip), source: 'device' };
+}
+
+// Windows login of the visitor via NTLM. Browsers only send it without a password prompt when the page is opened
+// by computer name (http://PCNAME:3100, "intranet"), so the page asks for this only on such links.
+// We just read the user name the browser hands over; the password is never checked or seen.
+function ntlmChallenge() {
+  const target = Buffer.from('LISTSONG', 'utf16le');
+  const info = Buffer.concat([
+    Buffer.from([2, 0, target.length, 0]), target, // NetBIOS domain name
+    Buffer.from([1, 0, target.length, 0]), target, // NetBIOS computer name
+    Buffer.from([0, 0, 0, 0]), // end of list
+  ]);
+  // unicode, request target, NTLM, always sign, domain target, extended session security, target info, 128-bit, 56-bit
+  const flags = 0x1 | 0x4 | 0x200 | 0x8000 | 0x10000 | 0x80000 | 0x800000 | 0x20000000 | 0x80000000;
+  const head = Buffer.alloc(48);
+  head.write('NTLMSSP\0', 0, 'latin1');
+  head.writeUInt32LE(2, 8);
+  head.writeUInt16LE(target.length, 12);
+  head.writeUInt16LE(target.length, 14);
+  head.writeUInt32LE(48, 16);
+  head.writeUInt32LE(flags >>> 0, 20);
+  crypto.randomBytes(8).copy(head, 24);
+  head.writeUInt16LE(info.length, 40);
+  head.writeUInt16LE(info.length, 42);
+  head.writeUInt32LE(48 + target.length, 44);
+  return Buffer.concat([head, target, info]).toString('base64');
+}
+
+async function windowsLogin(req, res) {
+  if (isLocal(req)) return json(res, 200, await identity(req));
+  const m = /^(?:NTLM|Negotiate) (.+)$/.exec(req.headers.authorization || '');
+  const msg = m ? Buffer.from(m[1], 'base64') : Buffer.alloc(0);
+  const type = msg.length >= 12 && msg.toString('latin1', 0, 8) === 'NTLMSSP\0' ? msg.readUInt32LE(8) : 0;
+  if (type === 1) {
+    res.writeHead(401, { 'WWW-Authenticate': 'NTLM ' + ntlmChallenge(), 'Cache-Control': 'no-store' });
+    return res.end();
+  }
+  if (type === 3 && msg.length >= 64) {
+    const unicode = msg.readUInt32LE(60) & 1;
+    const len = msg.readUInt16LE(36), off = msg.readUInt32LE(40);
+    const name = msg.slice(off, off + len).toString(unicode ? 'utf16le' : 'latin1').trim().slice(0, 30);
+    if (name) logins.set(clientIp(req), { name, at: Date.now() });
+    return json(res, 200, await identity(req));
+  }
+  res.writeHead(401, { 'WWW-Authenticate': 'NTLM', 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(await identity(req)));
+}
+
+function guard(route) {
+  return (req, res) => {
+    if (!isLocal(req)) return json(res, 403, { error: 'ลิงก์นี้เพิ่มเพลงได้อย่างเดียว — ควบคุมได้ที่เครื่องลำโพง' });
+    return route(req, res);
+  };
 }
 
 const routes = {
@@ -420,7 +548,14 @@ const routes = {
       clients.delete(res);
     });
   },
-  'GET /api/info': (req, res) => json(res, 200, { urls: lanUrls() }),
+  'GET /api/info': async (req, res) => json(res, 200, {
+    build: BUILD,
+    urls: await lanUrls(),
+    hostUrl: `http://${os.hostname()}:${PORT}`,
+    admin: isLocal(req),
+  }),
+  'GET /api/login': windowsLogin,
+  'GET /api/whoami': async (req, res) => json(res, 200, await identity(req)),
   'GET /api/search': async (req, res) => {
     const q = (new URL(req.url, 'http://x').searchParams.get('q') || '').trim().slice(0, 100);
     if (!q) return json(res, 400, { error: 'พิมพ์คำค้นหาก่อน' });
@@ -439,16 +574,16 @@ const routes = {
       const where = dup === state.current ? 'กำลังเล่นอยู่' : `อยู่ในคิวลำดับที่ ${state.queue.indexOf(dup) + 1} แล้ว`;
       return json(res, 409, { error: `เพลงนี้${where}` });
     }
-    json(res, 200, addSong(videoId, body.name, body.hint));
+    json(res, 200, addSong(videoId, (await identity(req)).name, body.hint));
   },
-  'POST /api/remove': async (req, res) => {
+  'POST /api/remove': guard(async (req, res) => {
     const { uid } = await readJson(req);
     state.queue = state.queue.filter((it) => it.uid !== uid);
     changed();
     scheduleClean();
     json(res, 200, { ok: true });
-  },
-  'POST /api/move': async (req, res) => {
+  }),
+  'POST /api/move': guard(async (req, res) => {
     const { uid, to } = await readJson(req); // to: 'up' | 'down' | 'top'
     const i = state.queue.findIndex((it) => it.uid === uid);
     if (i >= 0) {
@@ -458,44 +593,44 @@ const routes = {
       changed();
     }
     json(res, 200, { ok: true });
-  },
+  }),
   // uid guard: a double-click or two player tabs can't skip two songs
-  'POST /api/skip': async (req, res) => {
+  'POST /api/skip': guard(async (req, res) => {
     const { uid } = await readJson(req);
     if (state.current && (!uid || state.current.uid === uid)) advance();
     json(res, 200, { ok: true });
-  },
-  'POST /api/ended': async (req, res) => {
+  }),
+  'POST /api/ended': guard(async (req, res) => {
     const { uid } = await readJson(req);
     if (state.current && state.current.uid === uid) advance();
     json(res, 200, { ok: true });
-  },
-  'POST /api/pause': async (req, res) => {
+  }),
+  'POST /api/pause': guard(async (req, res) => {
     const { paused } = await readJson(req);
     state.paused = !!paused;
     changed();
     json(res, 200, { ok: true });
-  },
-  'POST /api/volume': async (req, res) => {
+  }),
+  'POST /api/volume': guard(async (req, res) => {
     const { volume } = await readJson(req);
     state.volume = Math.min(1, Math.max(0, Number(volume) || 0));
     changed();
     json(res, 200, { ok: true });
-  },
-  'POST /api/progress': async (req, res) => {
+  }),
+  'POST /api/progress': guard(async (req, res) => {
     const { uid, time, duration } = await readJson(req);
     if (state.current && state.current.uid === uid) {
       progress = { uid, time: Number(time) || 0, duration: Number(duration) || 0 };
       broadcast('progress', progress);
     }
     json(res, 200, { ok: true });
-  },
-  'POST /api/clear': async (req, res) => {
+  }),
+  'POST /api/clear': guard(async (req, res) => {
     state.queue = [];
     changed();
     scheduleClean();
     json(res, 200, { ok: true });
-  },
+  }),
 };
 
 const server = http.createServer(async (req, res) => {
@@ -533,12 +668,13 @@ server.on('error', (e) => {
 });
 
 loadState();
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', async () => {
   openBrowser();
   console.log('\n  🎵 คิวเพลง YouTube (ไม่มีโฆษณา) พร้อมใช้งาน\n');
   console.log(`  เครื่องลำโพง (เปิดที่เครื่องนี้):  ${PLAYER_URL}`);
   console.log('  ให้คนในวง LAN เปิด:');
-  for (const u of lanUrls()) console.log(`     ${u}`);
+  console.log(`     คอมพิวเตอร์ในบริษัท (ขึ้นชื่อผู้ใช้ Windows ให้เอง):  http://${os.hostname()}:${PORT}`);
+  for (const u of await lanUrls()) console.log(`     ${u}`);
   console.log(`\n  yt-dlp: ${YTDLP} ${YTDLP_VERSION || '(ไม่พบ! ลองเปิด start.bat ใหม่)'}`);
   console.log(`  แคชเพลงที่เล่นแล้ว: เก็บไม่เกิน ${CACHE_MAX_MB} MB (ลบเก่าสุดก่อนอัตโนมัติ)\n`);
   changed();

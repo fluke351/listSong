@@ -38,19 +38,25 @@ static class Launcher
             Directory.CreateDirectory(home);
             ExtractApp(home);
 
-            // keep a copy of this exe next to the app, so the desktop shortcut still works after the download is deleted
             string self = Assembly.GetExecutingAssembly().Location;
             string installedExe = Path.Combine(home, "listSong.exe");
-            if (!SamePath(self, installedExe))
-            {
-                try { File.Copy(self, installedExe, true); }
-                catch (IOException) { /* the installed copy is running right now */ }
-            }
-
+            // setup.ps1 also closes an older copy that is still running
             string setupArgs = "-NoProfile -ExecutionPolicy Bypass -File \"" + Path.Combine(home, "setup.ps1") + "\"";
             if (args.Length > 0) setupArgs += " " + string.Join(" ", args);
             int code = Run("powershell.exe", setupArgs, home, installedExe);
             if (code != 0) return Pause(code);
+
+            // keep a copy of this exe next to the app, so the desktop shortcut still works after the download is deleted.
+            // Done after setup: the old copy's file is locked until its window is closed, and a shortcut left on the
+            // old exe would unpack the old version again next time.
+            if (!SamePath(self, installedExe))
+            {
+                for (int i = 0; ; i++)
+                {
+                    try { File.Copy(self, installedExe, true); break; }
+                    catch (IOException) { if (i >= 10) break; System.Threading.Thread.Sleep(300); }
+                }
+            }
 
             string node = FindOnPath("node.exe") ?? Path.Combine(home, "bin", "node.exe");
             code = Run(node, "server.js", home, installedExe);

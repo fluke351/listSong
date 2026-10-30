@@ -13,6 +13,37 @@ New-Item -ItemType Directory -Force $bin | Out-Null
 Write-Host ''
 Write-Host '  🎵 คิวเพลง — กำลังเตรียมโปรแกรม...'
 
+# 0) An older version still running (a new listSong.exe was just double-clicked): close it so the new one starts.
+#    The same version is left alone; the server then just opens the page, since the port is taken.
+$build = if (Test-Path "$root\build.txt") { (Get-Content -Raw "$root\build.txt").Trim() } else { 'dev' }
+$running = $null
+try {
+  $wc = New-Object Net.WebClient
+  $wc.Proxy = $null
+  $wc.Encoding = [Text.Encoding]::UTF8
+  $running = $wc.DownloadString("http://127.0.0.1:$port/api/info") | ConvertFrom-Json
+} catch { }
+if ($running -and $running.urls -and $running.build -ne $build) {
+  Write-Host '  พบโปรแกรมเวอร์ชันเก่าเปิดอยู่ — กำลังปิดแล้วเปิดเวอร์ชันใหม่แทน...'
+  try {
+    $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($listener) {
+      $old = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)"
+      $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($old.ParentProcessId)"
+      Stop-Process -Id $old.ProcessId -Force -ErrorAction SilentlyContinue
+      # also close the old window: listSong.exe, or the cmd running start.bat (it would sit at "pause")
+      if ($parent -and ($parent.Name -eq 'listSong.exe' -or ($parent.Name -eq 'cmd.exe' -and $parent.CommandLine -match 'start\.bat'))) {
+        Stop-Process -Id $parent.ProcessId -Force -ErrorAction SilentlyContinue
+      }
+      for ($i = 0; $i -lt 40 -and (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue); $i++) {
+        Start-Sleep -Milliseconds 250
+      }
+    }
+  } catch {
+    Write-Host '  ปิดเวอร์ชันเก่าไม่สำเร็จ — ปิดหน้าต่างคิวเพลงเดิมเองแล้วเปิดใหม่อีกครั้ง' -ForegroundColor Yellow
+  }
+}
+
 function Save-Download($url, $dest, $label) {
   Write-Host "  กำลังดาวน์โหลด $label (ครั้งแรกเท่านั้น) ..."
   $tmp = "$dest.download"

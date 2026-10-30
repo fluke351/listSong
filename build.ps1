@@ -11,6 +11,9 @@ New-Item -ItemType Directory -Force $dist | Out-Null
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force "$stage\app" | Out-Null
 foreach ($f in $appFiles) { Copy-Item -Recurse (Join-Path $root $f) "$stage\app\" }
+# build stamp: lets a new listSong.exe spot an older copy that is still running and replace it
+$build = Get-Date -Format 'yyyyMMdd-HHmmss'
+[IO.File]::WriteAllText("$stage\app\build.txt", $build)
 
 # ZipFile writes forward-slash entry names, which every unzip tool understands
 $appZip = "$stage\app.zip"
