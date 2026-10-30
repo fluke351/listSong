@@ -57,10 +57,13 @@
 - ตอนที่ `start.bat` ขออนุญาตเปิดไฟร์วอลล์ ต้องกด **Yes** ถ้าเผลอกด No ให้ลบทางลัดแล้วเปิด `start.bat` ใหม่ หรือเปิด PowerShell แบบ **Run as administrator** แล้วรันคำสั่งนี้:
 
   ```powershell
-  netsh advfirewall firewall add rule name="listSong (TCP 3100)" dir=in action=allow protocol=TCP localport=3100
+  netsh advfirewall firewall add rule name="listSong (TCP 3100)" dir=in action=allow protocol=TCP localport=3100 profile=domain,private
   ```
 
 - ทุกเครื่องต้องต่อ Wi-Fi หรือ LAN วงเดียวกัน
+- ไฟร์วอลล์เปิดให้เฉพาะเครือข่ายบริษัท (Domain) และเครือข่ายส่วนตัว (Private) ถ้า Windows ตั้ง Wi-Fi ที่บ้านเป็น **Public** เครื่องอื่นจะเข้าไม่ได้
+  ให้ไปที่ Settings → Network & internet → Wi-Fi → เลือกวงนั้น → ตั้ง Network profile เป็น **Private**
+- ต้องเปิดผ่านชื่อเครื่องหรือ IP ของเครื่องลำโพงเท่านั้น (ชื่อโดเมนอื่นที่ชี้มาจะถูกปฏิเสธ เพื่อกันเว็บอื่นแอบสั่งคิวเพลง)
 - Wi-Fi ของบริษัทหรือ Wi-Fi สาธารณะบางที่ บล็อกการเชื่อมต่อระหว่างเครื่องไว้ ถ้าเป็นแบบนั้นให้ใช้ Wi-Fi หรือ hotspot ของตัวเองแทน
 
 ## การตั้งค่า (environment variables)

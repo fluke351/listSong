@@ -75,12 +75,21 @@ if (-not (Test-Path $yt)) {
 
 if ($NoSystem) { exit 0 }
 
-# 3) Windows Firewall — let other machines on the LAN connect (asks for admin once)
+# 3) Windows Firewall — let other machines on the office/home LAN connect (asks for admin once).
+#    Domain + Private only: on public Wi-Fi (cafe, airport) strangers can't reach the queue.
 $rule = "listSong (TCP $port)"
-if (-not (Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue)) {
+$existing = @(Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue)
+$cmd = $null
+if (-not $existing) {
   Write-Host '  ขออนุญาตเปิดไฟร์วอลล์ให้เครื่องอื่นในวง LAN เข้ามาได้ — กด Yes ในหน้าต่างที่เด้งขึ้น'
+  $cmd = "New-NetFirewallRule -DisplayName '$rule' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $port -Profile Domain,Private | Out-Null"
+} elseif ($existing | Where-Object { "$($_.Profile)" -eq 'Any' -or "$($_.Profile)" -match 'Public' }) {
+  # older versions opened the port on every network, including public Wi-Fi
+  Write-Host '  ปิดไม่ให้คนใน Wi-Fi สาธารณะเข้าคิวเพลงได้ — กด Yes ในหน้าต่างที่เด้งขึ้น (ครั้งเดียว)'
+  $cmd = "Get-NetFirewallRule -DisplayName '$rule' | Set-NetFirewallRule -Profile Domain,Private"
+}
+if ($cmd) {
   try {
-    $cmd = "New-NetFirewallRule -DisplayName '$rule' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $port -Profile Any | Out-Null"
     Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', $cmd
   } catch {
     Write-Host '  ข้ามการตั้งค่าไฟร์วอลล์ (เครื่องอื่นอาจเข้าไม่ได้ ดู README)'

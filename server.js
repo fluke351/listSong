@@ -527,6 +527,27 @@ async function windowsLogin(req, res) {
   res.end(JSON.stringify(await identity(req)));
 }
 
+// Web pages from other sites must not drive the queue through a visitor's browser:
+// - Host must be one of this machine's own names/addresses, so a DNS-rebinding domain pointed at us is refused
+// - POSTs must come from our own page (Origin) and be JSON, which a plain cross-site form can't send
+function allowedHosts() {
+  const names = ['localhost', '127.0.0.1', '[::1]', os.hostname()];
+  if (process.env.USERDNSDOMAIN) names.push(`${os.hostname()}.${process.env.USERDNSDOMAIN}`);
+  for (const a of Object.values(os.networkInterfaces()).flat()) {
+    if (a) names.push(a.family === 'IPv6' || a.family === 6 ? `[${a.address}]` : a.address);
+  }
+  return new Set(names.map((n) => n.toLowerCase()));
+}
+function hostOk(req) {
+  const host = String(req.headers.host || '').toLowerCase().replace(/:\d+$/, '');
+  return allowedHosts().has(host);
+}
+function sameOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true; // not sent by a browser cross-site request
+  try { return new URL(origin).host.toLowerCase() === String(req.headers.host || '').toLowerCase(); } catch { return false; }
+}
+
 function guard(route) {
   return (req, res) => {
     if (!isLocal(req)) return json(res, 403, { error: 'ลิงก์นี้เพิ่มเพลงได้อย่างเดียว — ควบคุมได้ที่เครื่องลำโพง' });
@@ -637,6 +658,10 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const route = routes[`${req.method} ${url.pathname}`];
   try {
+    if (!hostOk(req)) return json(res, 403, { error: 'เปิดผ่านชื่อเครื่องหรือ IP ของเครื่องลำโพงเท่านั้น' });
+    if (req.method === 'POST' && (!sameOrigin(req) || !/^application\/json\b/i.test(req.headers['content-type'] || ''))) {
+      return json(res, 403, { error: 'คำขอนี้ไม่ได้มาจากหน้าคิวเพลง' });
+    }
     if (route) return await route(req, res);
     if (req.method !== 'GET') return json(res, 404, { error: 'not found' });
 
