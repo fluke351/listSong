@@ -9,7 +9,7 @@
 
 ## ติดตั้งบนเครื่องใหม่ (กดทีเดียว)
 
-**[⬇ ดาวน์โหลด listSong.exe](https://github.com/fluke351/listSong/raw/main/dist/listSong.exe)** (ไฟล์เดียว ขนาดประมาณ 300 KB) แล้วดับเบิลคลิก หรือก๊อปไฟล์นี้ไปเครื่องอื่นก็ได้
+**[⬇ ดาวน์โหลด listSong.exe](https://github.com/fluke351/listSong/releases/latest/download/listSong.exe)** (ไฟล์เดียว ขนาดประมาณ 300 KB) แล้วดับเบิลคลิก หรือก๊อปไฟล์นี้ไปเครื่องอื่นก็ได้
 
 - ถ้า Windows ขึ้นหน้าต่าง "Windows protected your PC" ให้กด **More info** แล้วกด **Run anyway** (ขึ้นเพราะไฟล์ไม่ได้ลงลายเซ็นดิจิทัล)
 - โปรแกรมจะติดตั้งไว้ที่ `%LOCALAPPDATA%\listSong` หลังติดตั้งแล้วลบไฟล์ exe ที่ดาวน์โหลดมาทิ้งได้

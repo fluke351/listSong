@@ -4,6 +4,5 @@ cache/
 data/
 node_modules/
 
-# build output: only the exe is committed, so it can be downloaded straight from GitHub
-dist/*
-!dist/listSong.exe
+# build output: listSong.exe / listSong.zip are published on GitHub Releases
+dist/
