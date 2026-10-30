@@ -1,0 +1,9 @@
+# downloaded tools, songs and queue state live only on the machine running the program
+bin/
+cache/
+data/
+node_modules/
+
+# build output: only the exe is committed, so it can be downloaded straight from GitHub
+dist/*
+!dist/listSong.exe
