@@ -177,6 +177,17 @@
   .list-head h2 { margin: 0; font-size: 16px; font-weight: 700; }
   .list-head .sub { flex: 1; color: var(--muted); font-size: 13px; }
   ol { list-style: none; margin: 0; padding: 0; }
+
+  /* long lists scroll inside their panel instead of stretching the page */
+  #queue, #history { max-height: min(62vh, 640px); overflow-y: auto; overscroll-behavior: contain; }
+  #queue, #history, #resultsList { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.18) transparent; }
+  #queue::-webkit-scrollbar, #history::-webkit-scrollbar, #resultsList::-webkit-scrollbar { width: 8px; }
+  #queue::-webkit-scrollbar-thumb, #history::-webkit-scrollbar-thumb, #resultsList::-webkit-scrollbar-thumb { background: rgba(255,255,255,.16); border-radius: 8px; }
+  #queue::-webkit-scrollbar-thumb:hover, #history::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.28); }
+  /* soft fade at the edges that still have more songs to scroll to */
+  .fade-bottom { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 36px), transparent); }
+  .fade-top { -webkit-mask-image: linear-gradient(to bottom, transparent, #000 36px); mask-image: linear-gradient(to bottom, transparent, #000 36px); }
+  .fade-top.fade-bottom { -webkit-mask-image: linear-gradient(to bottom, transparent, #000 36px, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to bottom, transparent, #000 36px, #000 calc(100% - 36px), transparent); }
   .song { display: grid; grid-template-columns: 24px 88px minmax(0,1fr) auto; gap: 12px; align-items: center; padding: 8px 10px;
     border-radius: 14px; transition: background .15s; }
   .song.new { animation: pop .3s ease; }
@@ -242,6 +253,7 @@
     .song .th { width: 72px; }
     .song .acts { grid-column: 1 / -1; justify-content: flex-end; opacity: 1; margin-top: -4px; }
     #history .song { grid-template-columns: 72px minmax(0,1fr) auto; }
+    #queue, #history { max-height: 68vh; overscroll-behavior: auto; }
     #history .song .acts { grid-column: auto; margin: 0; }
     .add-btn .lbl { display: none; }
     .res { grid-template-columns: 80px minmax(0,1fr) auto; gap: 10px; }
@@ -471,6 +483,7 @@ function renderResults() {
     </li>`;
   }).join('');
   $('resultsList').scrollTop = scroll;
+  updateFade($('resultsList'));
 }
 
 $('resultsList').addEventListener('click', async (e) => {
@@ -575,7 +588,7 @@ function render() {
   $('clearBtn').hidden = !q.length;
   // only songs that weren't on screen before get the slide-in animation
   const seen = render.seen || new Set(q.map((it) => it.uid));
-  $('queue').innerHTML = q.length ? q.map((it, i) => `
+  fillList('queue', q.length ? q.map((it, i) => `
     <li class="song${it.status === 'error' ? ' err' : ''}${seen.has(it.uid) ? '' : ' new'}">
       <span class="n">${i + 1}</span>
       <div class="th">${img(it)}${it.duration ? `<span class="d">${fmt(it.duration)}</span>` : ''}</div>
@@ -589,13 +602,13 @@ function render() {
         <button data-act="down" data-uid="${it.uid}" title="เลื่อนลง" ${i === q.length - 1 ? 'disabled' : ''}>${icon('down')}</button>
         <button class="del" data-act="remove" data-uid="${it.uid}" title="ลบออกจากคิว">${icon('x')}</button>
       </div>
-    </li>`).join('') : '<li class="empty-list"><span>🎧</span>ไม่มีเพลงในคิว — วางลิงก์ YouTube เพื่อต่อคิว</li>';
+    </li>`).join('') : '<li class="empty-list"><span>🎧</span>ไม่มีเพลงในคิว — ค้นหาหรือวางลิงก์ YouTube เพื่อต่อคิว</li>', q.some((it) => !seen.has(it.uid)));
 
   render.seen = new Set(q.map((it) => it.uid));
 
   const h = state.history;
   $('hCount').textContent = h.length ? `${h.length} เพลง` : '';
-  $('history').innerHTML = h.length ? h.map((it) => `
+  fillList('history', h.length ? h.map((it) => `
     <li class="song">
       <div class="th">${img(it)}${it.duration ? `<span class="d">${fmt(it.duration)}</span>` : ''}</div>
       <div>
@@ -603,11 +616,29 @@ function render() {
         <div class="m">${avatar(it.addedBy)}<span class="nm">${esc(it.addedBy)}</span></div>
       </div>
       <div class="acts"><button data-act="readd" data-vid="${esc(it.videoId)}" title="เพิ่มเข้าคิวอีกครั้ง">${icon('plus')}</button></div>
-    </li>`).join('') : '<li class="empty-list">ยังไม่มีเพลงที่เล่นจบ</li>';
+    </li>`).join('') : '<li class="empty-list">ยังไม่มีเพลงที่เล่นจบ</li>');
 
   renderResults();
   if (IS_PLAYER) syncAudio();
 }
+
+// re-render a scrolling list without losing the reader's place;
+// if new songs were appended while the list sat at the bottom, follow them down
+function fillList(id, html, grew) {
+  const el = $(id);
+  const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
+  const top = el.scrollTop;
+  el.innerHTML = html;
+  el.scrollTop = grew && atBottom && top > 0 ? el.scrollHeight : top;
+  updateFade(el);
+}
+function updateFade(el) {
+  el.classList.toggle('fade-top', el.scrollTop > 4);
+  el.classList.toggle('fade-bottom', el.scrollTop + el.clientHeight < el.scrollHeight - 4);
+}
+for (const id of ['queue', 'history', 'resultsList']) $(id).addEventListener('scroll', (e) => updateFade(e.target), { passive: true });
+window.addEventListener('resize', () => ['queue', 'history', 'resultsList'].forEach((id) => updateFade($(id))));
+document.querySelector('details').addEventListener('toggle', () => updateFade($('history')));
 
 function renderProgress() {
   const c = state && state.current;
