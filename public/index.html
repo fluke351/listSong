@@ -103,6 +103,7 @@
   .round:hover { background: var(--glass-3); }
   .round.on { background: var(--grad); color: #fff; }
   .vol { flex: 1; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 19px; min-width: 0; margin-left: 6px; }
+  .vol small { font-size: 12px; white-space: nowrap; }
   .ear { display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 99px; background: var(--glass-2);
     font-size: 14px; font-weight: 600; white-space: nowrap; transition: background .15s; }
   .ear svg { font-size: 18px; }
@@ -371,7 +372,6 @@
 
 <script>
 const IS_PLAYER = location.pathname === '/player';
-let ADMIN = false; // true only on the machine running the server; guests can just add songs
 const $ = (id) => document.getElementById(id);
 let state = null;
 let progress = null; // { uid, time, duration, at, paused }
@@ -424,13 +424,22 @@ $('name').addEventListener('input', () => {
   $('name').classList.remove('need');
   try { localStorage.setItem('name', $('name').value.trim()); } catch {}
 });
-// every song needs a requester name; returns it, or null after pointing at the empty box
+// "ฟลุ๊ค" in any spelling may not be used (same check as isBannedName in server.js)
+function isBannedName(name) {
+  const s = String(name || '').normalize('NFKC').toLowerCase()
+    .replace(/[็-๎]/g, '')
+    .replace(/ู/g, 'ุ')
+    .replace(/[^\p{L}\p{M}\p{N}]/gu, '');
+  return /ฟ[ลร]ุ[คกข]|fl(u|oo)[kc]/.test(s);
+}
+// every song needs an allowed requester name; returns it, or null after pointing at the box
 function requesterName() {
   const name = $('name').value.trim();
-  if (name) return name;
+  const problem = !name ? 'กรอกชื่อก่อนขอเพลง' : isBannedName(name) ? 'ห้ามใช้ชื่อนี้ — ใช้ชื่อของตัวเอง' : '';
+  if (!problem) return name;
   $('name').classList.add('need');
   $('name').focus();
-  toast('กรอกชื่อก่อนขอเพลง', true);
+  toast(problem, true);
   return null;
 }
 
@@ -564,7 +573,7 @@ function render() {
   if (amb.dataset.bg !== bg) { amb.dataset.bg = bg; amb.style.backgroundImage = bg; amb.classList.toggle('none', !c); }
 
   // rebuild only when the song card actually changes, so the volume slider isn't replaced mid-drag
-  const nowKey = c ? [c.uid, c.title, c.channel, c.status, state.paused, ADMIN, listening, announceOn].join('|') : '';
+  const nowKey = c ? [c.uid, c.title, c.channel, c.status, state.paused, listening, announceOn].join('|') : '';
   if (nowKey === render.nowKey && c) {
     const vol = $('vol');
     if (vol && document.activeElement !== vol) { vol.value = Math.round(state.volume * 100); setVolFill(vol); }
@@ -595,19 +604,21 @@ function render() {
       </div>
       <div class="bar"><div id="barFill"></div></div>
       <div class="times"><span id="tNow">0:00</span><span id="tDur">${fmt(c.duration)}</span></div>
-      ${ADMIN ? `<div class="controls">
+      <div class="controls">
         <button class="play" id="ppBtn" title="เล่น/หยุด">${icon(state.paused ? 'play' : 'pause')}</button>
         <button class="round" id="skipBtn" title="ข้ามเพลง">${icon('next')}</button>
         ${IS_PLAYER ? `<button class="round${announceOn ? ' on' : ''}" id="announceBtn" title="อ่านชื่อเพลงและชื่อคนขอก่อนเล่น: ${announceOn ? 'เปิด' : 'ปิด'}">${icon('speak')}</button>` : ''}
-        <div class="vol">
+        <div class="vol" title="ระดับเสียงที่เครื่องลำโพง">
           <span id="volIcon">${icon(state.volume > 0 ? 'vol' : 'mute')}</span>
-          <input type="range" id="vol" min="0" max="100" value="${Math.round(state.volume * 100)}" aria-label="ระดับเสียง">
+          ${IS_PLAYER ? '' : '<small>ลำโพง</small>'}
+          <input type="range" id="vol" min="0" max="100" value="${Math.round(state.volume * 100)}" aria-label="ระดับเสียงที่เครื่องลำโพง">
         </div>
-      </div>` : ''}
+      </div>
       ${IS_PLAYER ? '' : `<div class="controls">
         <button class="ear${listening ? ' on' : ''}" id="earBtn" title="เล่นเพลงเดียวกับเครื่องลำโพงบนเครื่องนี้">${icon('ear')}${listening ? 'กำลังฟังด้วย' : 'ฟังด้วย'}</button>
-        ${listening ? `<div class="vol">
+        ${listening ? `<div class="vol" title="ระดับเสียงของเครื่องนี้ ไม่กระทบเครื่องลำโพง">
           <span id="earIcon">${icon(earVol > 0 ? 'vol' : 'mute')}</span>
+          <small>เครื่องนี้</small>
           <input type="range" id="earVol" min="0" max="100" value="${Math.round(earVol * 100)}" aria-label="ระดับเสียงเครื่องนี้">
         </div>` : ''}
       </div>`}`;
@@ -625,19 +636,17 @@ function render() {
         };
       }
     }
-    if (ADMIN) {
-      $('ppBtn').onclick = () => api('/api/pause', { paused: !state.paused });
-      $('skipBtn').onclick = () => api('/api/skip', { uid: c.uid });
-      if (IS_PLAYER) $('announceBtn').onclick = () => setAnnounce(!announceOn);
-      const vol = $('vol');
+    $('ppBtn').onclick = () => api('/api/pause', { paused: !state.paused });
+    $('skipBtn').onclick = () => api('/api/skip', { uid: c.uid });
+    if (IS_PLAYER) $('announceBtn').onclick = () => setAnnounce(!announceOn);
+    const vol = $('vol');
+    setVolFill(vol);
+    vol.oninput = () => {
       setVolFill(vol);
-      vol.oninput = () => {
-        setVolFill(vol);
-        $('volIcon').innerHTML = icon(+vol.value > 0 ? 'vol' : 'mute');
-        clearTimeout(render.volTimer);
-        render.volTimer = setTimeout(() => api('/api/volume', { volume: vol.value / 100 }), 120);
-      };
-    }
+      $('volIcon').innerHTML = icon(+vol.value > 0 ? 'vol' : 'mute');
+      clearTimeout(render.volTimer);
+      render.volTimer = setTimeout(() => api('/api/volume', { volume: vol.value / 100 }).catch((e) => toast(e.message, true)), 120);
+    };
     renderProgress();
   }
   render.nowKey = nowKey;
@@ -645,7 +654,7 @@ function render() {
   const q = state.queue;
   const total = q.reduce((s, it) => s + (it.duration || 0), 0);
   $('qCount').textContent = q.length ? `${q.length} เพลง${total ? ' · ' + fmt(total) : ''}` : '';
-  $('clearBtn').hidden = !q.length || !ADMIN;
+  $('clearBtn').hidden = !q.length;
   // only songs that weren't on screen before get the slide-in animation
   const seen = render.seen || new Set(q.map((it) => it.uid));
   fillList('queue', q.length ? q.map((it, i) => `
@@ -660,7 +669,7 @@ function render() {
         <button data-act="top" data-uid="${it.uid}" title="เล่นเป็นเพลงถัดไป" ${i === 0 ? 'disabled' : ''}>${icon('top')}</button>
         <button data-act="up" data-uid="${it.uid}" title="เลื่อนขึ้น" ${i === 0 ? 'disabled' : ''}>${icon('up')}</button>
         <button data-act="down" data-uid="${it.uid}" title="เลื่อนลง" ${i === q.length - 1 ? 'disabled' : ''}>${icon('down')}</button>
-        ${ADMIN ? `<button class="del" data-act="remove" data-uid="${it.uid}" title="ลบออกจากคิว">${icon('x')}</button>` : ''}
+        <button class="del" data-act="remove" data-uid="${it.uid}" title="ลบออกจากคิว">${icon('x')}</button>
       </div>
     </li>`).join('') : '<li class="empty-list"><span>🎧</span>ไม่มีเพลงในคิว — ค้นหาหรือวางลิงก์ YouTube เพื่อต่อคิว</li>', q.some((it) => !seen.has(it.uid)));
 
@@ -753,9 +762,7 @@ function connect() {
 }
 connect();
 
-infoP.then(({ urls, hostUrl, admin }) => {
-  ADMIN = !!admin;
-  render();
+infoP.then(({ urls, hostUrl }) => {
   // the speaker hands out both links; a guest already reached us at this address, so that's the one that works
   const links = LOOPBACK
     ? [hostUrl && { url: hostUrl, note: 'คอมพิวเตอร์ในบริษัท' },

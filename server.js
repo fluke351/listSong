@@ -348,7 +348,19 @@ function advance() {
   scheduleClean();
 }
 
+// names nobody may request songs under ("ฟลุ๊ค"), in any spelling: tone marks, spaces, dots, case,
+// invisible characters and look-alike vowels are ignored, and the name may not even contain it.
+// Same check runs in the page (public/index.html) so people find out before sending.
+function isBannedName(name) {
+  const s = String(name || '').normalize('NFKC').toLowerCase()
+    .replace(/[็-๎]/g, '') // Thai tone marks and the like
+    .replace(/ู/g, 'ุ') // long u -> short u
+    .replace(/[^\p{L}\p{M}\p{N}]/gu, ''); // spaces, dots, zero-width characters, emoji
+  return /ฟ[ลร]ุ[คกข]|fl(u|oo)[kc]/.test(s); // ฟลุค / ฟรุค / ฟลุก ... / fluke / flook
+}
+
 // hint = title/channel/duration from search results, shown until yt-dlp metadata arrives
+
 function addSong(videoId, addedBy, hint = {}) {
   const item = {
     uid: crypto.randomBytes(6).toString('hex'),
@@ -471,8 +483,7 @@ async function lanUrls() {
   return list.sort((x, y) => x.rank - y.rank).map((x) => x.url);
 }
 
-// only the machine running the server (the speaker) may control playback and remove songs;
-// everyone else on the LAN can add songs and reorder the queue
+// everyone on the LAN controls the queue and playback; only the speaker machine may use the voice relay (/api/tts)
 function clientIp(req) {
   return String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
 }
@@ -505,7 +516,7 @@ function sameOrigin(req) {
 
 function guard(route) {
   return (req, res) => {
-    if (!isLocal(req)) return json(res, 403, { error: 'ลิงก์นี้เพิ่มเพลงได้อย่างเดียว — ควบคุมได้ที่เครื่องลำโพง' });
+    if (!isLocal(req)) return json(res, 403, { error: 'ใช้ได้เฉพาะที่เครื่องลำโพง' });
     return route(req, res);
   };
 }
@@ -528,7 +539,6 @@ const routes = {
     build: BUILD,
     urls: await lanUrls(),
     hostUrl: `http://${os.hostname()}:${PORT}`,
-    admin: isLocal(req),
   }),
   'GET /api/tts': guard(async (req, res) => {
     const text = (new URL(req.url, 'http://x').searchParams.get('text') || '').trim().slice(0, 200);
@@ -555,6 +565,7 @@ const routes = {
     const videoId = parseYouTubeId(body.url);
     if (!videoId) return json(res, 400, { error: 'ลิงก์ไม่ถูกต้อง — ต้องเป็นลิงก์วิดีโอ YouTube' });
     if (!String(body.name || '').trim()) return json(res, 400, { error: 'กรอกชื่อก่อนขอเพลง' });
+    if (isBannedName(body.name)) return json(res, 400, { error: 'ห้ามใช้ชื่อนี้ — ใช้ชื่อของตัวเอง' });
     const dup = allItems().find((it) => it.videoId === videoId);
     if (dup) {
       const where = dup === state.current ? 'กำลังเล่นอยู่' : `อยู่ในคิวลำดับที่ ${state.queue.indexOf(dup) + 1} แล้ว`;
@@ -562,13 +573,13 @@ const routes = {
     }
     json(res, 200, addSong(videoId, body.name, body.hint));
   },
-  'POST /api/remove': guard(async (req, res) => {
+  'POST /api/remove': async (req, res) => {
     const { uid } = await readJson(req);
     state.queue = state.queue.filter((it) => it.uid !== uid);
     changed();
     scheduleClean();
     json(res, 200, { ok: true });
-  }),
+  },
   'POST /api/move': async (req, res) => {
     const { uid, to } = await readJson(req); // to: 'up' | 'down' | 'top'
     const i = state.queue.findIndex((it) => it.uid === uid);
@@ -581,42 +592,42 @@ const routes = {
     json(res, 200, { ok: true });
   },
   // uid guard: a double-click or two player tabs can't skip two songs
-  'POST /api/skip': guard(async (req, res) => {
+  'POST /api/skip': async (req, res) => {
     const { uid } = await readJson(req);
     if (state.current && (!uid || state.current.uid === uid)) advance();
     json(res, 200, { ok: true });
-  }),
-  'POST /api/ended': guard(async (req, res) => {
+  },
+  'POST /api/ended': async (req, res) => {
     const { uid } = await readJson(req);
     if (state.current && state.current.uid === uid) advance();
     json(res, 200, { ok: true });
-  }),
-  'POST /api/pause': guard(async (req, res) => {
+  },
+  'POST /api/pause': async (req, res) => {
     const { paused } = await readJson(req);
     state.paused = !!paused;
     changed();
     json(res, 200, { ok: true });
-  }),
-  'POST /api/volume': guard(async (req, res) => {
+  },
+  'POST /api/volume': async (req, res) => {
     const { volume } = await readJson(req);
     state.volume = Math.min(1, Math.max(0, Number(volume) || 0));
     changed();
     json(res, 200, { ok: true });
-  }),
-  'POST /api/progress': guard(async (req, res) => {
+  },
+  'POST /api/progress': async (req, res) => {
     const { uid, time, duration } = await readJson(req);
     if (state.current && state.current.uid === uid) {
       progress = { uid, time: Number(time) || 0, duration: Number(duration) || 0 };
       broadcast('progress', progress);
     }
     json(res, 200, { ok: true });
-  }),
-  'POST /api/clear': guard(async (req, res) => {
+  },
+  'POST /api/clear': async (req, res) => {
     state.queue = [];
     changed();
     scheduleClean();
     json(res, 200, { ok: true });
-  }),
+  },
 };
 
 const server = http.createServer(async (req, res) => {
