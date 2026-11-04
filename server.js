@@ -548,7 +548,8 @@ const versionInfo = () => ({ version: VERSION, latest: latest && newer(latest.ve
 
 let updating = false;
 // download the newest listSong.exe and run it hidden: its setup.ps1 closes this copy and starts the new one.
-// Started with OPEN_BROWSER=0 so no second speaker window opens; open pages reload themselves when the build changes.
+// Open pages reconnect and reload themselves when the build changes; the new copy opens a speaker window only if
+// none reconnects (see server.listen below).
 async function installUpdate() {
   if (!latest || !newer(latest.version, VERSION)) throw new Error('เป็นเวอร์ชันล่าสุดอยู่แล้ว');
   if (updating) throw new Error('กำลังอัปเดตอยู่');
@@ -563,7 +564,7 @@ async function installUpdate() {
     const exe = path.join(dir, 'listSong.exe');
     fs.writeFileSync(exe, buf);
     console.log(`  กำลังอัปเดตเป็นเวอร์ชัน ${latest.version} ...`);
-    spawn(exe, [], { cwd: dir, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, OPEN_BROWSER: '0' } }).unref();
+    spawn(exe, [], { cwd: dir, detached: true, stdio: 'ignore', windowsHide: true }).unref();
     setTimeout(() => { updating = false; }, 3 * 60 * 1000); // still here: the new copy failed to start, allow another try
   } catch (e) {
     updating = false;

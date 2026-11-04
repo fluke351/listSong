@@ -1,6 +1,6 @@
 {
   "name": "listsong",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "คิวเปิดเพลง YouTube สำหรับวง LAN แบบไม่มีโฆษณา",
   "main": "server.js",
   "private": true,

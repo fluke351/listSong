@@ -46,6 +46,7 @@ static class Launcher
             string setupArgs = "-NoProfile -ExecutionPolicy Bypass -File \"" + Path.Combine(home, "setup.ps1") + "\"";
             if (args.Length > 0) setupArgs += " " + string.Join(" ", args);
             int code = Run("powershell.exe", setupArgs, home, installedExe);
+            OpenLog(logFile); // free now if an older copy held it
             if (code != 0) return Fail("เตรียมโปรแกรมไม่สำเร็จ", logFile, code);
 
             // keep a copy of this exe next to the app, so the desktop shortcut still works after the download is deleted.
@@ -74,11 +75,25 @@ static class Launcher
         }
     }
 
+    // An older copy that is being replaced still holds the log until setup.ps1 has closed it, so lines are kept in
+    // memory until the file can be opened (tried again after setup).
+    static readonly List<string> pending = new List<string>();
+
     static void OpenLog(string file)
     {
-        try { if (File.Exists(file)) File.Copy(file, file + ".old", true); } catch (IOException) { }
-        try { log = new StreamWriter(file, false, new UTF8Encoding(false)); log.AutoFlush = true; }
-        catch (IOException) { log = null; } // an older copy still holds it; carry on without a log
+        lock (logLock)
+        {
+            if (log != null) return;
+            try
+            {
+                if (File.Exists(file)) File.Copy(file, file + ".old", true);
+                log = new StreamWriter(file, false, new UTF8Encoding(false));
+                log.AutoFlush = true;
+                foreach (string line in pending) log.WriteLine(line);
+                pending.Clear();
+            }
+            catch (IOException) { log = null; }
+        }
     }
 
     static void Write(string line)
@@ -88,7 +103,8 @@ static class Launcher
         {
             lastLines.Enqueue(line);
             while (lastLines.Count > 12) lastLines.Dequeue();
-            if (log != null) try { log.WriteLine(line); } catch (IOException) { }
+            if (log == null) { if (pending.Count < 2000) pending.Add(line); return; }
+            try { log.WriteLine(line); } catch (IOException) { }
         }
     }
 
