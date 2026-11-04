@@ -419,9 +419,28 @@ function json(res, code, data) {
   res.end(JSON.stringify(data));
 }
 
-// spoken "next song … requested by …" for the speaker, from Google Translate's Thai voice
+// spoken "next song … requested by …" for the speaker, from Google Translate's voices
 // (much clearer than the Windows voice browsers use). Not an official API: if it fails, the page falls back to the browser voice.
 const ttsCache = new Map(); // text -> mp3 Buffer, newest last
+async function ttsClip(text, lang) {
+  const url = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${lang}&q=` + encodeURIComponent(text);
+  const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
+  if (!r.ok || !/audio/.test(r.headers.get('content-type') || '')) throw new Error('HTTP ' + r.status);
+  return Buffer.from(await r.arrayBuffer());
+}
+// "ต่อไปเพลง LIPTA, ยัง" -> [th "ต่อไปเพลง", en "LIPTA,", th "ยัง"]; digits, spaces and punctuation join the run they're in
+function ttsParts(text) {
+  const parts = [];
+  for (const ch of text) {
+    const lang = /[฀-๿]/.test(ch) ? 'th' : /[A-Za-z]/.test(ch) ? 'en' : null;
+    const last = parts[parts.length - 1];
+    if (last && (!lang || !last.lang || last.lang === lang)) {
+      last.text += ch;
+      last.lang = last.lang || lang;
+    } else parts.push({ lang, text: ch });
+  }
+  return parts.map((p) => ({ lang: p.lang || 'th', text: p.text.trim() })).filter((p) => p.text);
+}
 async function tts(text) {
   if (ttsCache.has(text)) {
     const buf = ttsCache.get(text);
@@ -429,10 +448,14 @@ async function tts(text) {
     ttsCache.set(text, buf);
     return buf;
   }
-  const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=th&q=' + encodeURIComponent(text);
-  const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
-  if (!r.ok || !/audio/.test(r.headers.get('content-type') || '')) throw new Error('HTTP ' + r.status);
-  const buf = Buffer.from(await r.arrayBuffer());
+  // the Thai voice garbles English names, so English parts get the English voice; both come back as the
+  // same kind of MP3, which plays fine glued end to end
+  let buf;
+  try {
+    buf = Buffer.concat(await Promise.all(ttsParts(text).map((p) => ttsClip(p.text, p.lang))));
+  } catch {
+    buf = await ttsClip(text, 'th');
+  }
   ttsCache.set(text, buf);
   if (ttsCache.size > 50) ttsCache.delete(ttsCache.keys().next().value);
   return buf;
