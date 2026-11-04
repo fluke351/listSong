@@ -4,7 +4,6 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const dns = require('dns');
 const dgram = require('dgram');
 const { spawn, spawnSync } = require('child_process');
 
@@ -19,6 +18,8 @@ const BUILD = (() => {
 })(); // stamped by build.ps1; setup.ps1 compares it to replace an older running copy
 const PREFETCH = 3; // download current + next N songs ahead of time
 const MAX_HISTORY = 30;
+// the played list starts fresh every day at this time (HH:MM, local time)
+const HISTORY_RESET = /^([01]?\d|2[0-3]):([0-5]\d)$/.test(process.env.HISTORY_RESET || '') ? process.env.HISTORY_RESET : '17:30';
 // cache limit for songs that already played; songs playing or in the queue are always kept. 0 = delete right after playing
 const CACHE_MAX_MB = Math.max(0, Number(process.env.CACHE_MAX_MB ?? 500) || 0);
 const AUDIO_EXT = ['m4a', 'webm', 'mp4', 'opus', 'mp3', 'ogg', 'aac'];
@@ -229,6 +230,9 @@ function touchCached(videoId) {
   if (file) try { fs.utimesSync(path.join(CACHE_DIR, file), new Date(), new Date()); } catch { /* ignore */ }
 }
 
+// files not used since this time are deleted even under the size limit (set by the daily reset, see pruneHistory)
+let cacheCutoff = 0;
+
 // mtime = last time a song was queued/played, so the least recently used songs go first
 function cleanCache() {
   const keep = new Set([...allItems().map((it) => it.videoId), ...downloads.keys()]);
@@ -250,7 +254,7 @@ function cleanCache() {
   let total = files.reduce((s, f) => s + f.size, 0);
   const limit = CACHE_MAX_MB * 1024 * 1024;
   for (const f of files.filter((f) => !keep.has(f.videoId)).sort((a, b) => a.mtime - b.mtime)) {
-    if (total <= limit) break;
+    if (total <= limit && f.mtime >= cacheCutoff) break; // sorted oldest first, so the rest are newer too
     try {
       fs.unlinkSync(f.full);
       total -= f.size;
@@ -305,6 +309,24 @@ function pump() {
 }
 
 // ---------- queue actions ----------
+// drop songs played before the most recent reset time (today's if it has passed, else yesterday's),
+// and the stored files of songs not used since then. Songs playing or in the queue are kept.
+// Checked every minute, so it also catches up when the program was off at that time.
+function pruneHistory() {
+  const [h, m] = HISTORY_RESET.split(':').map(Number);
+  const reset = new Date();
+  reset.setHours(h, m, 0, 0);
+  if (reset > Date.now()) reset.setDate(reset.getDate() - 1);
+  if (reset.getTime() !== cacheCutoff) {
+    cacheCutoff = reset.getTime();
+    scheduleClean();
+  }
+  const kept = state.history.filter((it) => (it.playedAt || 0) >= reset.getTime());
+  if (kept.length === state.history.length) return;
+  state.history = kept;
+  changed();
+}
+
 function advance() {
   if (state.current) {
     const { uid, videoId, title, channel, duration, addedBy } = state.current;
@@ -372,6 +394,25 @@ function json(res, code, data) {
   res.end(JSON.stringify(data));
 }
 
+// spoken "next song … requested by …" for the speaker, from Google Translate's Thai voice
+// (much clearer than the Windows voice browsers use). Not an official API: if it fails, the page falls back to the browser voice.
+const ttsCache = new Map(); // text -> mp3 Buffer, newest last
+async function tts(text) {
+  if (ttsCache.has(text)) {
+    const buf = ttsCache.get(text);
+    ttsCache.delete(text);
+    ttsCache.set(text, buf);
+    return buf;
+  }
+  const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=th&q=' + encodeURIComponent(text);
+  const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
+  if (!r.ok || !/audio/.test(r.headers.get('content-type') || '')) throw new Error('HTTP ' + r.status);
+  const buf = Buffer.from(await r.arrayBuffer());
+  ttsCache.set(text, buf);
+  if (ttsCache.size > 50) ttsCache.delete(ttsCache.keys().next().value);
+  return buf;
+}
+
 function serveFile(req, res, file, cache) {
   fs.stat(file, (err, st) => {
     if (err || !st.isFile()) {
@@ -430,8 +471,8 @@ async function lanUrls() {
   return list.sort((x, y) => x.rank - y.rank).map((x) => x.url);
 }
 
-// only the machine running the server (the speaker) may control playback and edit the queue;
-// everyone else on the LAN can only add songs
+// only the machine running the server (the speaker) may control playback and remove songs;
+// everyone else on the LAN can add songs and reorder the queue
 function clientIp(req) {
   return String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
 }
@@ -439,92 +480,6 @@ function isLocal(req) {
   const ip = clientIp(req);
   if (ip === '::1' || ip.startsWith('127.')) return true;
   return Object.values(os.networkInterfaces()).flat().some((a) => a && a.address === ip);
-}
-
-// computer name of a Windows PC on the LAN (NetBIOS/LLMNR); phones usually don't answer
-const pcNames = new Map(); // ip -> Promise<string>
-function pcName(ip) {
-  if (!pcNames.has(ip)) {
-    pcNames.set(ip, new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(''), 8000);
-      dns.lookupService(ip, PORT, (err, host) => {
-        clearTimeout(timer);
-        host = err || !host || host === ip ? '' : host.split('.')[0];
-        resolve(host.slice(0, 30));
-      });
-    }).then((name) => {
-      if (!name) setTimeout(() => pcNames.delete(ip), 5 * 60 * 1000); // retry later
-      return name;
-    }));
-  }
-  return pcNames.get(ip);
-}
-
-// phones: over plain http the server only sees the User-Agent, so tell them apart by the end of their IP
-function phoneName(req, ip) {
-  const ua = String(req.headers['user-agent'] || '');
-  const kind = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android'
-    : /Macintosh/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : 'อุปกรณ์';
-  return `${kind} (.${ip.split(/[.:]/).pop()})`;
-}
-
-// the name tied to every song a visitor adds. It is decided here and never taken from the page,
-// so nobody can add songs under someone else's name.
-const logins = new Map(); // ip -> { name, at } from a Windows login handshake
-const LOGIN_TTL = 12 * 60 * 60 * 1000;
-async function identity(req) {
-  const ip = clientIp(req);
-  if (isLocal(req)) return { name: os.userInfo().username, source: 'login' };
-  const login = logins.get(ip);
-  if (login && Date.now() - login.at < LOGIN_TTL) return { name: login.name, source: 'login' };
-  const pc = await pcName(ip);
-  return pc ? { name: pc, source: 'pc' } : { name: phoneName(req, ip), source: 'device' };
-}
-
-// Windows login of the visitor via NTLM. Browsers only send it without a password prompt when the page is opened
-// by computer name (http://PCNAME:3100, "intranet"), so the page asks for this only on such links.
-// We just read the user name the browser hands over; the password is never checked or seen.
-function ntlmChallenge() {
-  const target = Buffer.from('LISTSONG', 'utf16le');
-  const info = Buffer.concat([
-    Buffer.from([2, 0, target.length, 0]), target, // NetBIOS domain name
-    Buffer.from([1, 0, target.length, 0]), target, // NetBIOS computer name
-    Buffer.from([0, 0, 0, 0]), // end of list
-  ]);
-  // unicode, request target, NTLM, always sign, domain target, extended session security, target info, 128-bit, 56-bit
-  const flags = 0x1 | 0x4 | 0x200 | 0x8000 | 0x10000 | 0x80000 | 0x800000 | 0x20000000 | 0x80000000;
-  const head = Buffer.alloc(48);
-  head.write('NTLMSSP\0', 0, 'latin1');
-  head.writeUInt32LE(2, 8);
-  head.writeUInt16LE(target.length, 12);
-  head.writeUInt16LE(target.length, 14);
-  head.writeUInt32LE(48, 16);
-  head.writeUInt32LE(flags >>> 0, 20);
-  crypto.randomBytes(8).copy(head, 24);
-  head.writeUInt16LE(info.length, 40);
-  head.writeUInt16LE(info.length, 42);
-  head.writeUInt32LE(48 + target.length, 44);
-  return Buffer.concat([head, target, info]).toString('base64');
-}
-
-async function windowsLogin(req, res) {
-  if (isLocal(req)) return json(res, 200, await identity(req));
-  const m = /^(?:NTLM|Negotiate) (.+)$/.exec(req.headers.authorization || '');
-  const msg = m ? Buffer.from(m[1], 'base64') : Buffer.alloc(0);
-  const type = msg.length >= 12 && msg.toString('latin1', 0, 8) === 'NTLMSSP\0' ? msg.readUInt32LE(8) : 0;
-  if (type === 1) {
-    res.writeHead(401, { 'WWW-Authenticate': 'NTLM ' + ntlmChallenge(), 'Cache-Control': 'no-store' });
-    return res.end();
-  }
-  if (type === 3 && msg.length >= 64) {
-    const unicode = msg.readUInt32LE(60) & 1;
-    const len = msg.readUInt16LE(36), off = msg.readUInt32LE(40);
-    const name = msg.slice(off, off + len).toString(unicode ? 'utf16le' : 'latin1').trim().slice(0, 30);
-    if (name) logins.set(clientIp(req), { name, at: Date.now() });
-    return json(res, 200, await identity(req));
-  }
-  res.writeHead(401, { 'WWW-Authenticate': 'NTLM', 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-  res.end(JSON.stringify(await identity(req)));
 }
 
 // Web pages from other sites must not drive the queue through a visitor's browser:
@@ -575,8 +530,17 @@ const routes = {
     hostUrl: `http://${os.hostname()}:${PORT}`,
     admin: isLocal(req),
   }),
-  'GET /api/login': windowsLogin,
-  'GET /api/whoami': async (req, res) => json(res, 200, await identity(req)),
+  'GET /api/tts': guard(async (req, res) => {
+    const text = (new URL(req.url, 'http://x').searchParams.get('text') || '').trim().slice(0, 200);
+    if (!text) return json(res, 400, { error: 'ไม่มีข้อความ' });
+    try {
+      const buf = await tts(text);
+      res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': buf.length, 'Cache-Control': 'no-store' });
+      res.end(buf);
+    } catch (e) {
+      json(res, 502, { error: 'สร้างเสียงอ่านไม่สำเร็จ: ' + e.message });
+    }
+  }),
   'GET /api/search': async (req, res) => {
     const q = (new URL(req.url, 'http://x').searchParams.get('q') || '').trim().slice(0, 100);
     if (!q) return json(res, 400, { error: 'พิมพ์คำค้นหาก่อน' });
@@ -590,12 +554,13 @@ const routes = {
     const body = await readJson(req);
     const videoId = parseYouTubeId(body.url);
     if (!videoId) return json(res, 400, { error: 'ลิงก์ไม่ถูกต้อง — ต้องเป็นลิงก์วิดีโอ YouTube' });
+    if (!String(body.name || '').trim()) return json(res, 400, { error: 'กรอกชื่อก่อนขอเพลง' });
     const dup = allItems().find((it) => it.videoId === videoId);
     if (dup) {
       const where = dup === state.current ? 'กำลังเล่นอยู่' : `อยู่ในคิวลำดับที่ ${state.queue.indexOf(dup) + 1} แล้ว`;
       return json(res, 409, { error: `เพลงนี้${where}` });
     }
-    json(res, 200, addSong(videoId, (await identity(req)).name, body.hint));
+    json(res, 200, addSong(videoId, body.name, body.hint));
   },
   'POST /api/remove': guard(async (req, res) => {
     const { uid } = await readJson(req);
@@ -604,7 +569,7 @@ const routes = {
     scheduleClean();
     json(res, 200, { ok: true });
   }),
-  'POST /api/move': guard(async (req, res) => {
+  'POST /api/move': async (req, res) => {
     const { uid, to } = await readJson(req); // to: 'up' | 'down' | 'top'
     const i = state.queue.findIndex((it) => it.uid === uid);
     if (i >= 0) {
@@ -614,7 +579,7 @@ const routes = {
       changed();
     }
     json(res, 200, { ok: true });
-  }),
+  },
   // uid guard: a double-click or two player tabs can't skip two songs
   'POST /api/skip': guard(async (req, res) => {
     const { uid } = await readJson(req);
@@ -693,12 +658,14 @@ server.on('error', (e) => {
 });
 
 loadState();
+pruneHistory();
+setInterval(pruneHistory, 60 * 1000);
 server.listen(PORT, '0.0.0.0', async () => {
   openBrowser();
   console.log('\n  🎵 คิวเพลง YouTube (ไม่มีโฆษณา) พร้อมใช้งาน\n');
   console.log(`  เครื่องลำโพง (เปิดที่เครื่องนี้):  ${PLAYER_URL}`);
   console.log('  ให้คนในวง LAN เปิด:');
-  console.log(`     คอมพิวเตอร์ในบริษัท (ขึ้นชื่อผู้ใช้ Windows ให้เอง):  http://${os.hostname()}:${PORT}`);
+  console.log(`     http://${os.hostname()}:${PORT}`);
   for (const u of await lanUrls()) console.log(`     ${u}`);
   console.log(`\n  yt-dlp: ${YTDLP} ${YTDLP_VERSION || '(ไม่พบ! ลองเปิด start.bat ใหม่)'}`);
   console.log(`  แคชเพลงที่เล่นแล้ว: เก็บไม่เกิน ${CACHE_MAX_MB} MB (ลบเก่าสุดก่อนอัตโนมัติ)\n`);
