@@ -21,10 +21,10 @@ $appZip = "$stage\app.zip"
 Copy-Item -Force $appZip "$dist\listSong.zip"
 
 $csc = Join-Path ([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) 'csc.exe'
-& $csc /nologo /codepage:65001 /target:exe /optimize+ `
+& $csc /nologo /codepage:65001 /target:winexe /optimize+ `
   "/win32icon:$root\public\favicon.ico" `
   "/resource:$appZip,app.zip" `
-  /r:System.IO.Compression.dll `
+  /r:System.IO.Compression.dll /r:System.Windows.Forms.dll `
   "/out:$dist\listSong.exe" `
   "$root\launcher\Launcher.cs"
 if ($LASTEXITCODE -ne 0) { throw "csc failed ($LASTEXITCODE)" }

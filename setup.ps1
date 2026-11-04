@@ -3,6 +3,7 @@ param([switch]$NoSystem) # -NoSystem: skip firewall + desktop shortcut (for test
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue' # the progress bar makes Invoke-WebRequest very slow
+try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { } # listSong.exe logs our output as UTF-8
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -31,8 +32,9 @@ if ($running -and $running.urls -and $running.build -ne $build) {
       $old = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)"
       $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($old.ParentProcessId)"
       Stop-Process -Id $old.ProcessId -Force -ErrorAction SilentlyContinue
-      # also close the old window: listSong.exe, or the cmd running start.bat (it would sit at "pause")
-      if ($parent -and ($parent.Name -eq 'listSong.exe' -or ($parent.Name -eq 'cmd.exe' -and $parent.CommandLine -match 'start\.bat'))) {
+      # also close the old launcher: listSong.exe (any copy of it, e.g. a renamed download), or the cmd running
+      # start.bat (it would sit at "pause")
+      if ($parent -and ($parent.Name -like 'listSong*.exe' -or ($parent.Name -eq 'cmd.exe' -and $parent.CommandLine -match 'start\.bat'))) {
         Stop-Process -Id $parent.ProcessId -Force -ErrorAction SilentlyContinue
       }
       for ($i = 0; $i -lt 40 -and (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue); $i++) {

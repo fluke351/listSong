@@ -38,19 +38,30 @@
   }
   svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
 
-  /* ambient background tinted by the current cover art */
+  /* the page follows the current song: accents take the cover art's colours (set from script),
+     fading over when the song changes, and the blurred cover drifts slowly behind everything */
+  @property --a1 { syntax: '<color>'; inherits: true; initial-value: #ff3d6e; }
+  @property --a2 { syntax: '<color>'; inherits: true; initial-value: #ff8a3d; }
+  :root { transition: --a1 1.4s ease, --a2 1.4s ease; }
   .ambient { position: fixed; inset: -15%; z-index: -2; background-size: cover; background-position: center;
-    filter: blur(90px) saturate(1.6); opacity: .38; transition: background-image .8s, opacity .8s; }
+    filter: blur(80px) saturate(1.7); opacity: .55; transition: background-image 1.2s, opacity 1.2s;
+    animation: drift 38s ease-in-out infinite alternate; }
   .ambient.none { opacity: 0; }
+  @keyframes drift {
+    from { transform: scale(1.05) translate(-3%, -2%) rotate(-2deg); }
+    to { transform: scale(1.2) translate(3%, 2%) rotate(2deg); }
+  }
+  @media (prefers-reduced-motion: reduce) { .ambient { animation: none; } }
   .veil { position: fixed; inset: 0; z-index: -1;
-    background: radial-gradient(1200px 600px at 20% -10%, rgba(255,61,110,.14), transparent 60%),
-                linear-gradient(180deg, rgba(11,11,18,.35), var(--bg) 85%); }
+    background: radial-gradient(1100px 620px at 15% -10%, color-mix(in srgb, var(--a1) 26%, transparent), transparent 62%),
+                radial-gradient(900px 600px at 100% 105%, color-mix(in srgb, var(--a2) 18%, transparent), transparent 60%),
+                linear-gradient(180deg, rgba(11,11,18,.2), color-mix(in srgb, var(--bg) 88%, transparent) 80%); }
 
   .wrap { max-width: 1180px; margin: 0 auto; padding: 22px 20px 60px; }
 
   /* header */
   header { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
-  .logo { width: 42px; height: 42px; border-radius: 11px; display: block; flex: none; box-shadow: 0 8px 24px rgba(255,61,110,.35); }
+  .logo { width: 42px; height: 42px; border-radius: 11px; display: block; flex: none; box-shadow: 0 8px 24px color-mix(in srgb, var(--a1) 35%, transparent); }
   .brand { flex: 1; min-width: 0; }
   .brand h1 { margin: 0; font-size: 21px; font-weight: 700; letter-spacing: -.01em; line-height: 1.2; }
   .brand p { margin: 0; font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
@@ -89,14 +100,14 @@
 
   .bar { position: relative; height: 6px; background: var(--glass-3); border-radius: 9px; margin: 18px 0 7px; overflow: hidden; }
   .bar > div { height: 100%; width: 0; background: var(--grad); border-radius: 9px; transition: width .5s linear;
-    box-shadow: 0 0 12px rgba(255,61,110,.6); }
+    box-shadow: 0 0 12px color-mix(in srgb, var(--a1) 60%, transparent); }
   .times { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
   .controls { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
   button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
   button:disabled { opacity: .3; cursor: default; }
   .play { width: 58px; height: 58px; border-radius: 50%; background: var(--grad); color: #fff; display: grid; place-items: center;
-    font-size: 24px; box-shadow: 0 10px 28px -6px rgba(255,61,110,.65); transition: transform .15s; }
+    font-size: 24px; box-shadow: 0 10px 28px -6px color-mix(in srgb, var(--a1) 65%, transparent); transition: transform .15s; }
   .play:hover { transform: scale(1.06); } .play:active { transform: scale(.96); }
   .round { width: 44px; height: 44px; border-radius: 50%; background: var(--glass-2); display: grid; place-items: center;
     font-size: 20px; transition: background .15s; }
@@ -108,7 +119,7 @@
     font-size: 14px; font-weight: 600; white-space: nowrap; transition: background .15s; }
   .ear svg { font-size: 18px; }
   .ear:hover { background: var(--glass-3); }
-  .ear.on { background: var(--grad); color: #fff; box-shadow: 0 8px 22px -8px rgba(255,61,110,.65); }
+  .ear.on { background: var(--grad); color: #fff; box-shadow: 0 8px 22px -8px color-mix(in srgb, var(--a1) 65%, transparent); }
   input[type=range] { -webkit-appearance: none; appearance: none; flex: 1; min-width: 60px; height: 5px; border-radius: 9px;
     background: linear-gradient(90deg, var(--a1) var(--p, 80%), var(--glass-3) var(--p, 80%)); outline: none; cursor: pointer; }
   input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 15px; height: 15px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
@@ -128,6 +139,10 @@
   .share-row > div { flex: 1; min-width: 0; }
   .share-row small { display: block; font-size: 11.5px; color: var(--dim); }
   .share .cache { display: block; margin-top: 2px; font-size: 11.5px; color: var(--dim); }
+  .admin-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--dim); }
+  .admin-row .ver { margin-right: auto; }
+  .btn-sm.hot { background: var(--grad); color: #fff; font-weight: 600; }
+  .btn-sm.busy { pointer-events: none; opacity: .6; }
   .btn-sm { padding: 8px 13px; border-radius: 10px; background: var(--glass-2); font-size: 13px; font-weight: 500; white-space: nowrap; }
   .btn-sm:hover { background: var(--glass-3); }
 
@@ -135,7 +150,7 @@
   .add { padding: 16px; }
   .field { display: flex; align-items: center; gap: 4px; background: rgba(0,0,0,.28); border: 1.5px solid var(--line); border-radius: 15px;
     padding: 5px 5px 5px 14px; transition: border-color .15s, box-shadow .15s; }
-  .field:focus-within { border-color: var(--a1); box-shadow: 0 0 0 4px rgba(255,61,110,.15); }
+  .field:focus-within { border-color: var(--a1); box-shadow: 0 0 0 4px color-mix(in srgb, var(--a1) 15%, transparent); }
   .field .yt { font-size: 22px; color: #ff0033; }
   .field input { flex: 1; min-width: 0; background: none; border: 0; outline: none; color: var(--text); font: inherit; font-size: 15px; padding: 10px 8px; }
   .field input::placeholder { color: var(--dim); }
@@ -315,7 +330,8 @@
       <section class="panel now" id="nowCard"></section>
       <section class="panel share" id="shareCard" hidden>
         <div class="ic"><svg><use href="#i-wifi"/></svg></div>
-        <div class="txt">ให้เพื่อนในวง LAN เปิด<div id="shareLinks"></div><span class="cache" id="cacheInfo"></span></div>
+        <div class="txt">ให้เพื่อนในวง LAN เปิด<div id="shareLinks"></div><span class="cache" id="cacheInfo"></span>
+          <div class="admin-row" id="adminRow" hidden></div></div>
       </section>
     </div>
 
@@ -409,8 +425,23 @@ function toast(msg, isErr) {
   toastTimer = setTimeout(() => (t.className = 'toast' + (isErr ? ' err' : '')), 3000);
 }
 
+// admin key: opening a link ending in #admin=<key> once makes this browser an admin of this speaker
+// (update, close the program, song-name reading), like the speaker machine itself
+let ADMIN = false;
+const ADMIN_KEY = (() => {
+  const m = /[#&]admin=([0-9a-f]{32})\b/.exec(location.hash);
+  try {
+    if (m) {
+      localStorage.setItem('adminKey', m[1]);
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+    return localStorage.getItem('adminKey') || '';
+  } catch { return m ? m[1] : ''; }
+})();
+const adminHeaders = ADMIN_KEY ? { 'X-Admin-Key': ADMIN_KEY } : {};
+
 async function api(path, body) {
-  const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', ...adminHeaders }, body: JSON.stringify(body || {}) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
   return data;
@@ -418,7 +449,7 @@ async function api(path, body) {
 
 // ---------- add songs ----------
 const LOOPBACK = /^(localhost|127\.|\[::1\])/.test(location.hostname);
-const infoP = fetch('/api/info').then((r) => r.json());
+const infoP = fetch('/api/info', { headers: adminHeaders }).then((r) => r.json());
 try { $('name').value = localStorage.getItem('name') || ''; } catch {}
 $('name').addEventListener('input', () => {
   $('name').classList.remove('need');
@@ -560,6 +591,60 @@ $('url').addEventListener('paste', (e) => {
   addLinks(text);
 });
 
+// ---------- colours from the cover art ----------
+// two strongest colours of the song's thumbnail become the accent colours (--a1, --a2); no song or a
+// grey cover: back to the default pink/orange. YouTube thumbnails allow reading their pixels (CORS).
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2, d = max - min;
+  if (!d) return [0, 0, l];
+  const s = d / (1 - Math.abs(2 * l - 1));
+  const h = max === r ? ((g - b) / d + 6) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h * 60, s, l];
+}
+function coverPalette(img) {
+  const cv = document.createElement('canvas');
+  cv.width = 48; cv.height = 27;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, cv.width, cv.height);
+  const px = ctx.getImageData(0, 0, cv.width, cv.height).data;
+  const bins = Array.from({ length: 12 }, () => ({ w: 0, h: 0 }));
+  for (let i = 0; i < px.length; i += 4) {
+    const [h, s, l] = rgbToHsl(px[i], px[i + 1], px[i + 2]);
+    if (s < 0.22 || l < 0.12 || l > 0.9) continue; // greys, black bars, white text
+    const w = s * (1 - Math.abs(l - 0.5) * 1.5);
+    const bin = bins[Math.floor(h / 30) % 12];
+    bin.w += w;
+    bin.h += h * w;
+  }
+  const ranked = bins.map((b, i) => ({ ...b, i })).filter((b) => b.w > 1.5).sort((a, b) => b.w - a.w);
+  if (!ranked.length) return null;
+  const hue = (b) => b.h / b.w;
+  const first = ranked[0];
+  // second colour: the strongest one at least 60 degrees away, else a neighbour of the first
+  const other = ranked.find((b) => Math.min(Math.abs(b.i - first.i), 12 - Math.abs(b.i - first.i)) >= 2);
+  const h1 = hue(first), h2 = other ? hue(other) : (h1 + 35) % 360;
+  // bright enough to glow on the dark page, dark enough for white text on top (yellows go darker)
+  const tone = (h) => `hsl(${Math.round(h)} 85% ${h > 40 && h < 80 ? 46 : h > 80 && h < 170 ? 44 : 58}%)`;
+  return [tone(h1), tone(h2)];
+}
+let paletteFor = null;
+function applyPalette(videoId) {
+  paletteFor = videoId;
+  const set = (p) => {
+    if (paletteFor !== videoId) return; // the song changed again meanwhile
+    const root = document.documentElement.style;
+    if (p) { root.setProperty('--a1', p[0]); root.setProperty('--a2', p[1]); }
+    else { root.removeProperty('--a1'); root.removeProperty('--a2'); }
+  };
+  if (!videoId) return set(null);
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => { try { set(coverPalette(img)); } catch { set(null); } };
+  img.onerror = () => set(null);
+  img.src = `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/mqdefault.jpg`;
+}
+
 // ---------- render ----------
 function setVolFill(el) { el.style.setProperty('--p', el.value + '%'); }
 
@@ -570,10 +655,15 @@ function render() {
 
   const amb = $('ambient');
   const bg = c ? `url("https://i.ytimg.com/vi/${c.videoId}/hqdefault.jpg")` : '';
-  if (amb.dataset.bg !== bg) { amb.dataset.bg = bg; amb.style.backgroundImage = bg; amb.classList.toggle('none', !c); }
+  if (amb.dataset.bg !== bg) {
+    amb.dataset.bg = bg;
+    amb.style.backgroundImage = bg;
+    amb.classList.toggle('none', !c);
+    applyPalette(c && c.videoId);
+  }
 
   // rebuild only when the song card actually changes, so the volume slider isn't replaced mid-drag
-  const nowKey = c ? [c.uid, c.title, c.channel, c.status, state.paused, listening, announceOn].join('|') : '';
+  const nowKey = c ? [c.uid, c.title, c.channel, c.status, state.paused, listening, announceOn, ADMIN].join('|') : '';
   if (nowKey === render.nowKey && c) {
     const vol = $('vol');
     if (vol && document.activeElement !== vol) { vol.value = Math.round(state.volume * 100); setVolFill(vol); }
@@ -607,7 +697,7 @@ function render() {
       <div class="controls">
         <button class="play" id="ppBtn" title="เล่น/หยุด">${icon(state.paused ? 'play' : 'pause')}</button>
         <button class="round" id="skipBtn" title="ข้ามเพลง">${icon('next')}</button>
-        ${IS_PLAYER ? `<button class="round${announceOn ? ' on' : ''}" id="announceBtn" title="อ่านชื่อเพลงและชื่อคนขอก่อนเล่น: ${announceOn ? 'เปิด' : 'ปิด'}">${icon('speak')}</button>` : ''}
+        ${ADMIN ? `<button class="round${announceOn ? ' on' : ''}" id="announceBtn" title="อ่านชื่อเพลงและชื่อคนขอก่อนเล่น: ${announceOn ? 'เปิด' : 'ปิด'}">${icon('speak')}</button>` : ''}
         <div class="vol" title="ระดับเสียงที่เครื่องลำโพง">
           <span id="volIcon">${icon(state.volume > 0 ? 'vol' : 'mute')}</span>
           ${IS_PLAYER ? '' : '<small>ลำโพง</small>'}
@@ -638,7 +728,7 @@ function render() {
     }
     $('ppBtn').onclick = () => api('/api/pause', { paused: !state.paused });
     $('skipBtn').onclick = () => api('/api/skip', { uid: c.uid });
-    if (IS_PLAYER) $('announceBtn').onclick = () => setAnnounce(!announceOn);
+    if (ADMIN) $('announceBtn').onclick = () => setAnnounce(!announceOn);
     const vol = $('vol');
     setVolFill(vol);
     vol.oninput = () => {
@@ -737,16 +827,54 @@ document.addEventListener('click', (e) => {
 });
 $('clearBtn').onclick = () => { if (confirm('ล้างเพลงทั้งหมดในคิว?')) api('/api/clear'); };
 
+// ---------- admin: version, update, close ----------
+let versionInfo = null; // { version, latest }
+function renderAdmin() {
+  const row = $('adminRow');
+  if (!ADMIN || !versionInfo) { row.hidden = true; return; }
+  const { version, latest } = versionInfo;
+  row.innerHTML = `
+    <span class="ver">เวอร์ชัน ${esc(version)}${latest ? ` · <b>มีเวอร์ชันใหม่ ${esc(latest)}</b>` : ''}</span>
+    ${latest ? `<button class="btn-sm hot" id="updateBtn">อัปเดตเป็น ${esc(latest)}</button>` : ''}
+    <button class="btn-sm" id="quitBtn">ปิดโปรแกรม</button>`;
+  row.hidden = false;
+  if (latest) $('updateBtn').onclick = (e) => {
+    if (!confirm(`อัปเดตเป็นเวอร์ชัน ${latest}?\nเพลงจะหยุดประมาณครึ่งนาทีระหว่างอัปเดต แล้วเล่นต่อเอง`)) return;
+    e.target.classList.add('busy');
+    e.target.textContent = 'กำลังอัปเดต…';
+    api('/api/update').then(() => toast('กำลังติดตั้งเวอร์ชันใหม่ หน้านี้จะโหลดใหม่เอง'))
+      .catch((err) => { toast(err.message, true); renderAdmin(); });
+  };
+  $('quitBtn').onclick = () => {
+    if (confirm('ปิดโปรแกรมคิวเพลงที่เครื่องลำโพง?\nเปิดใหม่ได้จากทางลัด "คิวเพลง" บนหน้าจอเครื่องนั้น')) api('/api/quit').catch((err) => toast(err.message, true));
+  };
+}
+
 // ---------- live updates ----------
+let firstBuild = null; // the page reloads itself when the server comes back as a new version
 function connect() {
-  const es = new EventSource('/api/events');
+  const es = new EventSource('/api/events' + (IS_PLAYER ? '?player' : ''));
   const setConn = (on) => { $('dot').classList.toggle('on', on); $('connText').textContent = on ? 'เชื่อมต่อแล้ว' : 'กำลังเชื่อมต่อใหม่…'; };
-  es.onopen = () => setConn(true);
+  es.onopen = () => {
+    setConn(true);
+    fetch('/api/info').then((r) => r.json()).then(({ build }) => {
+      if (firstBuild === null) firstBuild = build;
+      else if (build !== firstBuild) location.reload();
+    }).catch(() => {});
+  };
   es.onerror = () => setConn(false);
+  es.addEventListener('version', (e) => { versionInfo = JSON.parse(e.data); renderAdmin(); });
+  es.addEventListener('closed', () => {
+    toast('โปรแกรมคิวเพลงถูกปิดแล้ว', true);
+    // the program's own speaker window goes away with it (browsers only let a page close a window like that)
+    if (IS_PLAYER) { audio.pause(); setTimeout(() => window.close(), 800); }
+  });
   es.addEventListener('state', (e) => {
     const wasPaused = state && state.paused;
     state = JSON.parse(e.data);
     if (wasPaused && !state.paused) resumedAt = Date.now();
+    announceOn = state.announce !== false;
+    if (!announceOn && announcing) { announcing = 0; stopSpeaking(); }
     render();
   });
   es.addEventListener('cache', (e) => {
@@ -762,7 +890,10 @@ function connect() {
 }
 connect();
 
-infoP.then(({ urls, hostUrl }) => {
+infoP.then(({ urls, hostUrl, admin }) => {
+  ADMIN = !!admin;
+  renderAdmin();
+  render();
   // the speaker hands out both links; a guest already reached us at this address, so that's the one that works
   const links = LOOPBACK
     ? [hostUrl && { url: hostUrl, note: 'คอมพิวเตอร์ในบริษัท' },
@@ -870,8 +1001,7 @@ function syncAudio() {
 }
 
 // ---------- read out the song and who asked for it (speaker only) ----------
-let announceOn = true;
-try { announceOn = localStorage.getItem('announce') !== '0'; } catch {}
+let announceOn = true; // follows state.announce, switched by an admin
 let announcedUid = null;
 let announcing = 0; // id of the announcement being spoken, 0 = none
 let announceSeq = 0;
@@ -961,22 +1091,24 @@ function prefetchAnnouncement() {
 }
 
 function setAnnounce(on) {
-  announceOn = on;
-  try { localStorage.setItem('announce', on ? '1' : '0'); } catch {}
-  if (!on && announcing) { announcing = 0; stopSpeaking(); syncAudio(); }
-  toast(on ? 'เปิดการอ่านชื่อเพลงก่อนเล่น' : 'ปิดการอ่านชื่อเพลงแล้ว');
-  render();
+  api('/api/announce', { on })
+    .then(() => toast(on ? 'เปิดการอ่านชื่อเพลงก่อนเล่น' : 'ปิดการอ่านชื่อเพลงแล้ว'))
+    .catch((e) => toast(e.message, true));
 }
 
 if (IS_PLAYER) {
   $('modeBadge').innerHTML = `${icon('vol')} เครื่องลำโพง`;
   $('modeBadge').classList.add('speaker');
-  $('startOverlay').hidden = false;
-  $('startBtn').onclick = () => {
+  const arm = () => {
     armed = true;
     $('startOverlay').hidden = true;
     if (state) syncAudio();
   };
+  $('startBtn').onclick = arm;
+  // the speaker window opened by the program may play sound by itself; an ordinary browser tab
+  // refuses until someone clicks, so only then ask for the start button
+  const silence = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAACAgICA');
+  silence.play().then(arm, () => { if (!armed) $('startOverlay').hidden = false; });
   audio.addEventListener('ended', () => loadedUid && api('/api/ended', { uid: loadedUid }));
   audio.addEventListener('error', () => {
     if (!loadedUid) return;

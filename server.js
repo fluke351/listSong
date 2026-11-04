@@ -16,6 +16,13 @@ const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const BUILD = (() => {
   try { return fs.readFileSync(path.join(ROOT, 'build.txt'), 'utf8').trim(); } catch { return 'dev'; }
 })(); // stamped by build.ps1; setup.ps1 compares it to replace an older running copy
+const VERSION = (() => {
+  try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version || '0.0.0'; } catch { return '0.0.0'; }
+})(); // compared with the newest GitHub release to offer an update; bump it in package.json for every release
+const RELEASES = 'fluke351/listSong';
+// sha256 of the admin key: a browser holding the key may update and close the program from any machine,
+// like the speaker itself. Only the hash lives here; the key is kept by the owner.
+const ADMIN_KEY_HASH = '39478926f03f1d97e74478df7571b04d4206a7eb0de4709c2b2fd00a42e732ce';
 const PREFETCH = 3; // download current + next N songs ahead of time
 const MAX_HISTORY = 30;
 // the played list starts fresh every day at this time (HH:MM, local time)
@@ -45,7 +52,7 @@ const YTDLP_VERSION = (spawnSync(YTDLP, ['--version'], { encoding: 'utf8', windo
 const YTDLP_BASE_ARGS = YTDLP_VERSION >= '2025.11' ? ['--js-runtimes', `node:${process.execPath}`] : [];
 
 // ---------- state ----------
-let state = { current: null, queue: [], history: [], paused: false, volume: 0.8 };
+let state = { current: null, queue: [], history: [], paused: false, volume: 0.8, announce: true };
 let progress = null; // { uid, time, duration }
 
 function loadState() {
@@ -68,6 +75,11 @@ function saveState() {
     fs.writeFile(STATE_FILE, JSON.stringify(state, null, 1), () => {});
   }, 300);
 }
+// before exiting: the delayed save above would never run
+function saveStateNow() {
+  clearTimeout(saveTimer);
+  try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 1)); } catch { /* keep the last saved queue */ }
+}
 
 function allItems() {
   return [state.current, ...state.queue].filter(Boolean);
@@ -78,6 +90,7 @@ function findItem(uid) {
 
 // ---------- server-sent events ----------
 const clients = new Set();
+let players = 0; // open speaker pages (/player)
 function send(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
@@ -483,7 +496,9 @@ async function lanUrls() {
   return list.sort((x, y) => x.rank - y.rank).map((x) => x.url);
 }
 
-// everyone on the LAN controls the queue and playback; only the speaker machine may use the voice relay (/api/tts)
+// everyone on the LAN controls the queue and playback. Updating, closing the program and the song-name reading
+// switch are for admins: the speaker machine itself, or a browser that sends the admin key.
+// Only the speaker machine may use the voice relay (/api/tts).
 function clientIp(req) {
   return String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
 }
@@ -491,6 +506,69 @@ function isLocal(req) {
   const ip = clientIp(req);
   if (ip === '::1' || ip.startsWith('127.')) return true;
   return Object.values(os.networkInterfaces()).flat().some((a) => a && a.address === ip);
+}
+function isAdmin(req) {
+  if (isLocal(req)) return true;
+  const key = String(req.headers['x-admin-key'] || '');
+  if (!/^[0-9a-f]{32}$/.test(key)) return false;
+  const hash = crypto.createHash('sha256').update(key).digest();
+  return crypto.timingSafeEqual(hash, Buffer.from(ADMIN_KEY_HASH, 'hex'));
+}
+function adminOnly(route) {
+  return (req, res) => {
+    if (!isAdmin(req)) return json(res, 403, { error: 'ใช้ได้เฉพาะผู้ดูแล' });
+    return route(req, res);
+  };
+}
+
+// ---------- updates from GitHub Releases ----------
+// "1.10.0" > "1.9.2"
+function newer(a, b) {
+  const pa = String(a).replace(/^v/, '').split('.').map(Number), pb = String(b).replace(/^v/, '').split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+  return false;
+}
+let latest = null; // { version, url } of the newest release
+let lastUpdateCheck = 0;
+async function checkForUpdate() {
+  lastUpdateCheck = Date.now();
+  try {
+    const r = await fetch(`https://api.github.com/repos/${RELEASES}/releases/latest`, {
+      headers: { 'User-Agent': 'listSong', Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15000),
+    });
+    if (!r.ok) return;
+    const rel = await r.json();
+    const exe = (rel.assets || []).find((a) => a.name === 'listSong.exe');
+    if (!exe) return;
+    latest = { version: String(rel.tag_name).replace(/^v/, ''), url: exe.browser_download_url };
+    broadcast('version', versionInfo());
+  } catch { /* offline: try again later */ }
+}
+const versionInfo = () => ({ version: VERSION, latest: latest && newer(latest.version, VERSION) ? latest.version : null });
+
+let updating = false;
+// download the newest listSong.exe and run it hidden: its setup.ps1 closes this copy and starts the new one.
+// Started with OPEN_BROWSER=0 so no second speaker window opens; open pages reload themselves when the build changes.
+async function installUpdate() {
+  if (!latest || !newer(latest.version, VERSION)) throw new Error('เป็นเวอร์ชันล่าสุดอยู่แล้ว');
+  if (updating) throw new Error('กำลังอัปเดตอยู่');
+  updating = true;
+  try {
+    const r = await fetch(latest.url, { headers: { 'User-Agent': 'listSong' }, signal: AbortSignal.timeout(120000) });
+    if (!r.ok) throw new Error('ดาวน์โหลดไม่สำเร็จ (HTTP ' + r.status + ')');
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length < 50000 || buf.toString('latin1', 0, 2) !== 'MZ') throw new Error('ไฟล์ที่ดาวน์โหลดมาไม่ใช่ตัวติดตั้ง');
+    const dir = path.join(DATA_DIR, 'update', latest.version);
+    fs.mkdirSync(dir, { recursive: true });
+    const exe = path.join(dir, 'listSong.exe');
+    fs.writeFileSync(exe, buf);
+    console.log(`  กำลังอัปเดตเป็นเวอร์ชัน ${latest.version} ...`);
+    spawn(exe, [], { cwd: dir, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, OPEN_BROWSER: '0' } }).unref();
+    setTimeout(() => { updating = false; }, 3 * 60 * 1000); // still here: the new copy failed to start, allow another try
+  } catch (e) {
+    updating = false;
+    throw e;
+  }
 }
 
 // Web pages from other sites must not drive the queue through a visitor's browser:
@@ -528,17 +606,50 @@ const routes = {
     send(res, 'state', state);
     if (progress) send(res, 'progress', progress);
     send(res, 'cache', cacheInfo);
+    send(res, 'version', versionInfo());
     clients.add(res);
+    const player = new URL(req.url, 'http://x').searchParams.has('player');
+    if (player) players++;
     const ping = setInterval(() => res.write(': ping\n\n'), 20000);
     req.on('close', () => {
       clearInterval(ping);
       clients.delete(res);
+      if (player) players--;
     });
   },
-  'GET /api/info': async (req, res) => json(res, 200, {
-    build: BUILD,
-    urls: await lanUrls(),
-    hostUrl: `http://${os.hostname()}:${PORT}`,
+  'GET /api/info': async (req, res) => {
+    // an admin looking at the page sees a fresh release soon, not only at the 6-hourly check
+    if (isAdmin(req) && Date.now() - lastUpdateCheck > 5 * 60 * 1000) checkForUpdate();
+    json(res, 200, {
+      build: BUILD,
+      ...versionInfo(),
+      urls: await lanUrls(),
+      hostUrl: `http://${os.hostname()}:${PORT}`,
+      admin: isAdmin(req),
+      players,
+    });
+  },
+  'POST /api/update': adminOnly(async (req, res) => {
+    try {
+      await installUpdate();
+      json(res, 200, { ok: true });
+    } catch (e) {
+      json(res, 400, { error: e.message });
+    }
+  }),
+  // with no console window, this is how the program gets closed
+  'POST /api/quit': adminOnly(async (req, res) => {
+    json(res, 200, { ok: true });
+    console.log('  ปิดโปรแกรมจากปุ่มในหน้าเว็บ');
+    broadcast('closed', {});
+    saveStateNow();
+    setTimeout(() => process.exit(0), 500);
+  }),
+  'POST /api/announce': adminOnly(async (req, res) => {
+    const { on } = await readJson(req);
+    state.announce = !!on;
+    changed();
+    json(res, 200, { ok: true });
   }),
   'GET /api/tts': guard(async (req, res) => {
     const text = (new URL(req.url, 'http://x').searchParams.get('text') || '').trim().slice(0, 200);
@@ -654,25 +765,42 @@ const server = http.createServer(async (req, res) => {
 });
 
 const PLAYER_URL = `http://127.0.0.1:${PORT}/player`;
-function openBrowser() {
+// The speaker page opens in its own Edge app window that may play sound without a click, so nobody has to
+// press start. It keeps its own profile in data\, apart from the user's browser. No Edge: the default browser.
+function findEdge() {
+  const dirs = [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA].filter(Boolean);
+  return dirs.map((d) => path.join(d, 'Microsoft', 'Edge', 'Application', 'msedge.exe')).find((f) => fs.existsSync(f));
+}
+function openBrowser(url = PLAYER_URL) {
   if (process.env.OPEN_BROWSER !== '1' || process.platform !== 'win32') return;
-  spawn('cmd', ['/c', 'start', '', PLAYER_URL], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  const edge = url === PLAYER_URL && findEdge();
+  if (edge) {
+    spawn(edge, [`--app=${url}`, '--autoplay-policy=no-user-gesture-required', `--user-data-dir=${path.join(DATA_DIR, 'speaker-browser')}`,
+      '--no-first-run', '--no-default-browser-check'], { detached: true, stdio: 'ignore' }).unref();
+  } else {
+    spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  }
 }
 
 server.on('error', (e) => {
   if (e.code !== 'EADDRINUSE') throw e;
-  // double-clicked start.bat again: the program is already running, just show it
+  // the shortcut was opened again while the program runs: show it. A second speaker window would play
+  // every song twice, so if one is already open, open the add-songs page instead.
   console.log(`\n  พอร์ต ${PORT} ถูกใช้อยู่ — โปรแกรมอาจเปิดอยู่แล้ว กำลังเปิดหน้าเว็บให้...`);
   console.log('  (ถ้าหน้าเว็บที่เปิดขึ้นมาไม่ใช่คิวเพลง แปลว่ามีโปรแกรมอื่นใช้พอร์ตนี้อยู่ ให้ปิดโปรแกรมนั้นก่อน)\n');
-  openBrowser();
-  setTimeout(() => process.exit(0), 2500); // not an error: the window just closes after showing the page
+  fetch(`http://127.0.0.1:${PORT}/api/info`, { signal: AbortSignal.timeout(3000) })
+    .then((r) => r.json())
+    .then((info) => openBrowser(info.players > 0 ? `http://127.0.0.1:${PORT}/` : PLAYER_URL))
+    .catch(() => openBrowser())
+    .finally(() => setTimeout(() => process.exit(0), 2500)); // not an error: nothing more to do
 });
 
 loadState();
 pruneHistory();
 setInterval(pruneHistory, 60 * 1000);
 server.listen(PORT, '0.0.0.0', async () => {
-  openBrowser();
+  // a speaker window left open from the last run reconnects by itself within a few seconds; open one only if none did
+  setTimeout(() => { if (players === 0) openBrowser(); }, 3500);
   console.log('\n  🎵 คิวเพลง YouTube (ไม่มีโฆษณา) พร้อมใช้งาน\n');
   console.log(`  เครื่องลำโพง (เปิดที่เครื่องนี้):  ${PLAYER_URL}`);
   console.log('  ให้คนในวง LAN เปิด:');
@@ -680,6 +808,9 @@ server.listen(PORT, '0.0.0.0', async () => {
   for (const u of await lanUrls()) console.log(`     ${u}`);
   console.log(`\n  yt-dlp: ${YTDLP} ${YTDLP_VERSION || '(ไม่พบ! ลองเปิด start.bat ใหม่)'}`);
   console.log(`  แคชเพลงที่เล่นแล้ว: เก็บไม่เกิน ${CACHE_MAX_MB} MB (ลบเก่าสุดก่อนอัตโนมัติ)\n`);
+  console.log(`  เวอร์ชัน ${VERSION} (build ${BUILD})\n`);
   changed();
   cleanCache();
+  setTimeout(checkForUpdate, 10 * 1000);
+  setInterval(checkForUpdate, 6 * 60 * 60 * 1000);
 });
